@@ -1,0 +1,1373 @@
+{
+  "name": "Sec Move in",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node - Robust Contract Number Extraction\n\nconst inputData = $input.all();\n\n// Prefer these paths in order\nfunction pickPrimaryText(json) {\n  const candidates = [\n    json?.description,\n    json?.text,\n    json?.message,\n    json?.content,\n    json?.body,\n    json?.note,\n    json?.output?.description,   // <-- nested path in your example\n  ].filter(v => typeof v === 'string' && v.trim().length > 0);\n\n  if (candidates.length) return candidates[0];\n\n  // Fallback: recursively collect all string fields\n  return collectAllStrings(json).join(\"\\n\");\n}\n\nfunction collectAllStrings(obj, bag = []) {\n  if (obj == null) return bag;\n  if (typeof obj === \"string\") {\n    bag.push(obj);\n    return bag;\n  }\n  if (Array.isArray(obj)) {\n    for (const v of obj) collectAllStrings(v, bag);\n    return bag;\n  }\n  if (typeof obj === \"object\") {\n    for (const k of Object.keys(obj)) collectAllStrings(obj[k], bag);\n    return bag;\n  }\n  return bag;\n}\n\n// Extract contract numbers:\n// - Residential/commercial: start with 10 or 20 + 9 digits (total 11)\n// - Optional extra rule: numbers starting with 3 and length >= 11 (as in your regex)\n// Use lookarounds to avoid issues with non-Latin boundaries.\nconst reContract = /(?<!\\d)((?:10|20)\\d{9}|3\\d{10,})(?!\\d)/g;\n\nfunction extractAllContracts(text) {\n  if (!text || typeof text !== \"string\") return [];\n  const results = [];\n  let m;\n  while ((m = reContract.exec(text)) !== null) {\n    results.push(m[1]);\n  }\n  return results;\n}\n\n// Gather from all inputs\nconst all = [];\nfor (const item of inputData) {\n  const json = item.json || {};\n  const text = pickPrimaryText(json);\n  const found = extractAllContracts(text);\n  all.push(...found);\n}\n\n// De-dupe while preserving order\nconst seen = new Set();\nconst unique = [];\nfor (const n of all) {\n  if (!seen.has(n)) {\n    seen.add(n);\n    unique.push(n);\n  }\n}\n\n// Your downstream expects: input_params as [ \"num1,num2,...\" ]\nconst input_params = [ unique.join(\",\") ];\n\nreturn [{\n  input_params,\n  script_name: \"sec_move_in_scripts/fetch_contract_id_from_core\",\n  service_name: \"ejar3-sidekiq\"\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        240
+      ],
+      "id": "ac426b78-75a2-471f-a8ac-05d6b95b33d0",
+      "name": "Extract contract numbers",
+      "alwaysOutputData": true,
+      "executeOnce": false,
+      "retryOnFail": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        0
+      ],
+      "id": "2d695493-a5fb-41dc-85f0-2a31d57f4ae3",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jiraVersion": "server",
+        "operation": "getAll",
+        "limit": 1,
+        "options": {
+          "fields": "summary,description,key,labels,status",
+          "jql": "project = ES AND status = \"To Do\" AND labels in (\"SEC_Move_out\") ORDER BY created ASC"
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        240,
+        240
+      ],
+      "id": "c29bf5d9-4956-49b0-bc2c-fb9049c9b0a0",
+      "name": "Automatic ticket fetcher",
+      "alwaysOutputData": true,
+      "credentials": {
+        "jiraSoftwareServerApi": {
+          "id": "310lvBWLAxwBAmfc",
+          "name": "Jira SW Server account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jiraVersion": "server",
+        "operation": "get",
+        "issueKey": "ES-8008",
+        "additionalFields": {
+          "fields": "summary,description,key,labels,status"
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
+      "id": "46834633-5057-4129-99b1-dd1e656721a0",
+      "name": "Manual ticket fetcher",
+      "credentials": {
+        "jiraSoftwareServerApi": {
+          "id": "310lvBWLAxwBAmfc",
+          "name": "Jira SW Server account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -160,
+        240
+      ],
+      "id": "75de1b17-2e13-42cd-9f8f-5d8600c94913",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// For single ticket output with nested \"output\" structure\nconst item = $input.first().json\n\nconst customOutput = {\n  output: {\n    ticket_number: item.key,\n    summary: item.fields.summary || '',\n    description: item.fields.description || '',\n    label: item.fields.labels[0] || ''\n  }\n};\n\nreturn [{ json: customOutput }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        240
+      ],
+      "id": "27fbb579-2bb2-4e46-a1d5-32434de30cb3",
+      "name": "Parse ticket details"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c5a911ba-b94a-4299-bdba-a7a4c8dd72fd",
+              "leftValue": "={{ $json.output.label }}",
+              "rightValue": "SEC_Move_in",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {
+          "ignoreCase": true
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        240
+      ],
+      "id": "10fa8886-e7af-449f-8d95-f02522c8357a",
+      "name": "If SEC Move In",
+      "alwaysOutputData": false,
+      "retryOnFail": false,
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "o2iCPG1NWFQklfv8",
+          "mode": "list",
+          "cachedResultName": "Execute Gitlab pipeline"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1720,
+        240
+      ],
+      "name": "Execute: fetch contract ids from core",
+      "id": "bbe1cd24-a89d-4c22-85dd-933888afdb5e",
+      "alwaysOutputData": false,
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get stdout from previous node\nconst output = $('Execute: fetch contract ids from core').first().json.stdout\n\nfunction extractSection(text, marker) {\n  const start = `${marker} START`;\n  const end   = `${marker} END`;\n  const regex = new RegExp(`${start}[\\\\s\\\\S]*?${end}`, 'm');\n  const match = text.match(regex);\n  if (!match) return '';   // Always return a string\n\n  // Extract inner lines (between markers)\n  const inner = match[0]\n    .replace(start, \"\")\n    .replace(end, \"\")\n    .trim();\n\n  const lines = inner\n    .split(\"\\n\")\n    .map(s => s.trim())\n    .filter(Boolean);\n\n  // Clean array-like formatting if present ([\"...\"])\n  return lines\n    .join(\"\\n\")\n    .replace(/^\\[\\s*\"?/, \"\")   // remove leading [\"\n    .replace(/\"?\\s*\\]$/, \"\");  // remove trailing \"]\n}\n\nreturn [\n  {\n    contract_info: extractSection(output, \"CONTRACT IDS\")\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2120,
+        240
+      ],
+      "id": "b92a7943-4ece-4be4-a01e-d5a5792ab684",
+      "name": "Extract cases: contract_ids"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.inactive_contract_ids }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "array",
+                      "operation": "lengthGt",
+                      "rightType": "number"
+                    },
+                    "id": "d3ed4b07-0189-4f2c-a4cd-a54b9a761c8f"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Inactive contracts"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b4fb464e-3ef6-4a20-8066-a8a217e68e0b",
+                    "leftValue": "={{ $json.active_contract_ids }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "array",
+                      "operation": "lengthGt",
+                      "rightType": "number"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Active contracts"
+            }
+          ]
+        },
+        "options": {
+          "allMatchingOutputs": true
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2920,
+        240
+      ],
+      "id": "a8bfe4ad-ed85-48eb-be18-43966202264d",
+      "name": "Switch",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node: stringify inactive cases with single quotes\n\nconst inactiveObjs = $input.first().json.inactive_contract_ids\n\n// Turn each inactive object into a single-quoted JSON-like string\nconst input_params = inactiveObjs.map(obj => {\n  // Stringify to JSON first (double quotes), then swap \" -> '\n  return JSON.stringify(obj).replace(/\"/g, \"'\");\n});\n\nreturn [\n  {\n    input_params,\n    script_name: \"sec_move_in_scripts/if_already_moved_in\",\n    service_name: 'ejar3-sec'\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        -20
+      ],
+      "id": "8ff06e39-ba3d-4989-a1d7-896d3604fde2",
+      "name": "Prepare: if already moved_in"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get stdout from previous node\nconst output = $input.first().json.stdout\n\nfunction extractSection(text, marker) {\n  const start = `${marker} START`;\n  const end   = `${marker} END`;\n  const regex = new RegExp(`${start}[\\\\s\\\\S]*?${end}`, 'm');\n  const match = text.match(regex);\n  if (!match) return '';   // Always return a string\n\n  // Extract inner lines (between markers)\n  const inner = match[0]\n    .replace(start, \"\")\n    .replace(end, \"\")\n    .trim();\n\n  const lines = inner\n    .split(\"\\n\")\n    .map(s => s.trim())\n    .filter(Boolean);\n\n  // Clean array-like formatting if present ([\"...\"])\n  return lines\n    .join(\"\\n\")\n    .replace(/^\\[\\s*\"?/, \"\")   // remove leading [\"\n    .replace(/\"?\\s*\\]$/, \"\");  // remove trailing \"]\n}\n\nreturn [\n  {\n    already_moved_in: extractSection(output, \"ALREADY MOVED IN CASES\"),\n    unacted_done_cases: extractSection(output, \"NOT MOVED IN CASES\"),\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4300,
+        -20
+      ],
+      "id": "b8810993-3d9d-4959-b29c-61699db2352c",
+      "name": "Extract inactive cases: already_moved_in vs not_moved_in"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node: stringify inactive cases with single quotes\n\nconst active_cases = $input.first().json.active_contract_ids\n\n// Turn each inactive object into a single-quoted JSON-like string\nlet input_params = active_cases.map((c) => c.contract_number)\n\nreturn [\n  {\n    input_params,\n    script_name: \"sec_move_in_scripts/fetch_unit_details_from_core\",\n    service_name: 'ejar3-sidekiq'\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        380
+      ],
+      "id": "fc572f2a-aa63-4f04-8f7e-5f7457525a10",
+      "name": "Prepare: fetch unit details from core"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "o2iCPG1NWFQklfv8",
+          "mode": "list",
+          "cachedResultName": "Execute Gitlab pipeline"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        3900,
+        380
+      ],
+      "name": "Execute: Fetch unit input attributes",
+      "id": "25c66054-d791-438e-bd71-1606fef204b8",
+      "alwaysOutputData": false,
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.cases_with_complete_requirements }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "array",
+                      "operation": "lengthGt",
+                      "rightType": "number"
+                    },
+                    "id": "5d5f8f6a-ad4c-43bf-b2f2-873f15677312"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Complete cases"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "2aa71b8c-c398-4295-9815-879f8dae2315",
+                    "leftValue": "={{ $json.to_trigger_already_created_cases }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "array",
+                      "operation": "lengthGt",
+                      "rightType": "number"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "To triigger already-created cases"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "ad2d6970-eeb1-4c5f-88a1-d96e05959c66",
+                    "leftValue": "={{ $json.cases_with_incomplete_requirements }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "array",
+                      "operation": "lengthGt",
+                      "rightType": "number"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Incomplete cases"
+            }
+          ]
+        },
+        "options": {
+          "allMatchingOutputs": true
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        5160,
+        380
+      ],
+      "id": "f869cc19-2e74-4551-bdee-97ad69757444",
+      "name": "Complete vs incomplete cases"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node — parse cases JSON strings into arrays\n\nconst input_cases_with_complete_requirements = $input.first().json.cases_with_complete_requirements;\nconst input_cases_with_incomplete_requirements = $input.first().json.cases_with_incomplete_requirements;\n\nfunction parseCases(str) {\n  if (!str || typeof str !== 'string' || !str.trim()) return [];\n  const trimmed = str.trim();\n\n  // If it's not already an array, wrap multiple objects with [ ... ]\n  const asArrayText = trimmed.startsWith('[') ? trimmed : `[${trimmed}]`;\n\n  try {\n    return JSON.parse(asArrayText);\n  } catch (e) {\n    throw new Error(`Failed to parse cases JSON: ${e.message}\\n--- text ---\\n${asArrayText}`);\n  }\n}\n\nconst cases_with_complete_requirements = parseCases(input_cases_with_complete_requirements);\nconst cases_with_incomplete_requirements = parseCases(input_cases_with_incomplete_requirements);\nconst to_trigger_already_created_cases = [...new Set(cases_with_incomplete_requirements.map(i => i.contract_number))];\n                                                \n\nreturn [\n  {\n    cases_with_complete_requirements,\n    cases_with_incomplete_requirements,\n    to_trigger_already_created_cases\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4740,
+        380
+      ],
+      "id": "512b0c7d-89f5-41e4-9e7d-0051b246e60e",
+      "name": "Cases: parse json"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node: Split contracts by state and return only IDs\n\n// Get input JSON string\nconst input = $input.first().json.contract_info\n\n// Parse stringified JSON array safely\nlet contracts = [];\ntry {\n  contracts = JSON.parse(`[${input.trim().replace(/},\\s*{/g, \"},{\")}]`);\n} catch (e) {\n  throw new Error(\"❌ Failed to parse contract_info JSON: \" + e.message);\n}\n\n// Define state categories\nconst inactiveStates = [\"terminated\", \"archived\", \"rejected\", \"expired\"];\nconst activeStates   = [\"draft\", \"registered\", \"active\"];\n\n// Separate and map to only IDs\nconst inactive_contract_ids = contracts\n  .filter(c => inactiveStates.includes(c.state))\n  // .map(c => c.id);\n\nconst active_contract_ids = contracts\n  .filter(c => activeStates.includes(c.state))\n  // .map(c => c.id);\n\n// Return clean arrays\nreturn [\n  {\n    inactive_contract_ids,\n    active_contract_ids\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        240
+      ],
+      "id": "dfa2f2bb-4b04-4cdd-ac61-1d32a8bba8e2",
+      "name": "Segregate cases: active/inactive contracts"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "o2iCPG1NWFQklfv8",
+          "mode": "list",
+          "cachedResultName": "Execute Gitlab pipeline"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        3900,
+        -20
+      ],
+      "name": "Execute: if already moved_in",
+      "id": "44fc0c3f-9b41-45e2-96b4-c10f4daa1ea5",
+      "alwaysOutputData": false,
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get stdout from previous node\nconst output = $input.first().json.stdout\n\nfunction extractSection(text, marker) {\n  const start = `${marker} START`;\n  const end   = `${marker} END`;\n  const regex = new RegExp(`${start}[\\\\s\\\\S]*?${end}`, 'm');\n  const match = text.match(regex);\n  if (!match) return '';   // Always return a string\n\n  // Extract inner lines (between markers)\n  const inner = match[0]\n    .replace(start, \"\")\n    .replace(end, \"\")\n    .trim();\n\n  const lines = inner\n    .split(\"\\n\")\n    .map(s => s.trim())\n    .filter(Boolean);\n\n  // Clean array-like formatting if present ([\"...\"])\n  return lines\n    .join(\"\\n\")\n    .replace(/^\\[\\s*\"?/, \"\")   // remove leading [\"\n    .replace(/\"?\\s*\\]$/, \"\");  // remove trailing \"]\n}\n\nreturn [\n  {\n    cases_with_complete_requirements: extractSection(output, \"CASES WITH COMPLETE REQUIREMENTS\"),\n    cases_with_incomplete_requirements: extractSection(output, \"CASES WITH INCOMPLETE REQUIREMENTS\"),\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4300,
+        380
+      ],
+      "id": "324a2ee1-9fd0-42c1-be88-51c1abb48af8",
+      "name": "Cases with complete vs incomplete requirements"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node: stringify inactive cases with single quotes\n\nconst cases_with_complete_requirements = $input.first().json.cases_with_complete_requirements\n\n// Turn each inactive object into a single-quoted JSON-like string\nconst input_params = cases_with_complete_requirements.map(obj => {\n  // Stringify to JSON first (double quotes), then swap \" -> '\n  return JSON.stringify(obj).replace(/\"/g, \"'\");\n});\n\nreturn [\n  {\n    input_params,\n    script_name: \"sec_move_in_scripts/sec_move_in\",\n    service_name: 'ejar3-sec'\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5940,
+        120
+      ],
+      "id": "993d80f1-d2f8-46c7-87a3-8d68e6402e43",
+      "name": "Prepare: sec_move_in(cases with complete requirements)"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "o2iCPG1NWFQklfv8",
+          "mode": "list",
+          "cachedResultName": "Execute Gitlab pipeline"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        6420,
+        120
+      ],
+      "name": "Execute: sec_move_in(cases with complete requirements)",
+      "id": "6537d5e0-3a0a-4c13-9a53-52613ff5ae8f",
+      "alwaysOutputData": false,
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get stdout from previous node\nconst output = $input.first().json.stdout\n\nfunction extractSection(text, marker) {\n  const start = `${marker} START`;\n  const end   = `${marker} END`;\n  const regex = new RegExp(`${start}[\\\\s\\\\S]*?${end}`, 'm');\n  const match = text.match(regex);\n  if (!match) return '';   // Always return a string\n\n  // Extract inner lines (between markers)\n  const inner = match[0]\n    .replace(start, \"\")\n    .replace(end, \"\")\n    .trim();\n\n  const lines = inner\n    .split(\"\\n\")\n    .map(s => s.trim())\n    .filter(Boolean);\n\n  // Clean array-like formatting if present ([\"...\"])\n  return lines\n    .join(\"\\n\")\n    .replace(/^\\[\\s*\"?/, \"\")   // remove leading [\"\n    .replace(/\"?\\s*\\]$/, \"\");  // remove trailing \"]\n}\n\nreturn [\n  {\n    processed_cases: extractSection(output, \"DONE CASES\"),\n    failed_cases: extractSection(output, \"UNDONE CASES\"),\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6860,
+        120
+      ],
+      "id": "016b64ea-b420-472d-971d-6bb9365f0898",
+      "name": "Extract cases: done vs undone"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        8360,
+        -540
+      ],
+      "id": "be297b9b-0f1e-47f7-a13b-d3a2ddde04ec",
+      "name": "Merge",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "jsCode": "const input_params = $input.first().json.to_trigger_already_created_cases\n\nreturn [\n  {\n    input_params,\n    script_name: \"sec_move_in_scripts/trigger_already_created_inactive_requests\",\n    service_name: 'ejar3-sec'\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5940,
+        560
+      ],
+      "id": "698babba-c135-45e4-9ff7-136f903238b7",
+      "name": "Prepare: trigger already-created inactive requests"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "o2iCPG1NWFQklfv8",
+          "mode": "list",
+          "cachedResultName": "Execute Gitlab pipeline"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        6420,
+        560
+      ],
+      "name": "Execute: trigger already-created inactive requests",
+      "id": "2ee57831-9190-46eb-9a0d-625e90c48a53",
+      "alwaysOutputData": false,
+      "notesInFlow": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        9740,
+        60
+      ],
+      "id": "f65a9a7d-8508-4f3d-818d-f03e09248e71",
+      "name": "Merge1",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get merged input data\nconst input = $input.all();\n\n// Extract all text-like fields from all items\nlet combined = [];\n\nfor (const item of input) {\n  const json = item.json;\n  for (const key in json) {\n    if (!json[key]) continue;\n    let val = json[key]\n      .replace(/\"\\s*\\+\\s*\\n?/g, \"\")    // remove string concatenations (\" +)\n      .replace(/^\"+|\"+$/g, \"\")         // strip outer quotes\n      .replace(/\\\\n/g, \"\\n\")           // unescape \\n to real newlines\n      .trim();\n\n    if (val) combined.push(val);\n  }\n}\n\n// Join all lines cleanly, separated by newlines\nconst finalComment = combined\n  .filter(Boolean)\n  .join(\"\\n\")\n  .trim();\n\nreturn [\n  {\n    jira_comment: finalComment,\n    ticket_number: $('Parse ticket details').first().json.output.ticket_number\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11400,
+        540
+      ],
+      "id": "a85afb76-716b-4609-b716-20ec1de4db8d",
+      "name": "Prepare: JIRA comment1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node — extract sections into arrays; empty => []\n\nconst output = String($input.first().json.stdout || \"\");\n\nfunction extractSectionToArray(text, marker) {\n  const start = `${marker} START`;\n  const end   = `${marker} END`;\n  const regex = new RegExp(`${start}[\\\\s\\\\S]*?${end}`, \"m\");\n  const match = text.match(regex);\n  if (!match) return '';\n\n  // Pull inner block\n  let inner = match[0]\n    .replace(start, \"\")\n    .replace(end, \"\")\n    .trim();\n\n  // Handle common artifacts like: \"\\\"line1\\\\n\\\" +\\n\\\"line2\\\"\"\n  inner = inner\n    .replace(/\"\\s*\\+\\s*\\n?/g, \"\")    // remove \" + concatenations\n    .replace(/^\"+|\"+$/g, \"\")         // strip outer quotes\n    .replace(/\\\\n/g, \"\\n\");          // unescape \\n to real newlines\n\n  // Treat explicit empty-string content as empty array\n  const normalized = inner.trim();\n  if (!normalized || normalized === '\"\"') return '';\n\n  // Split to lines; drop empties\n  const lines = normalized\n    .split(\"\\n\")\n    .map(s => s.trim())\n    .filter(Boolean);\n\n  return lines.length ? lines : '';\n}\n\nreturn [\n  {\n    triggered_already_created_requests_success_cases: extractSectionToArray(output, \"TRIGGERED ALREADY-CREATED REQUESTS SUCCESS CASES\"),\n    triggered_already_created_requests_failed_cases:  extractSectionToArray(output, \"TRIGGERED ALREADY-CREATED REQUESTS FAILED CASES\"),\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6860,
+        560
+      ],
+      "id": "115966dc-ce33-4d6d-8c37-e4e63a917cc9",
+      "name": "Extract triggered_already_created cases: success vs failed"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node — Parse JIRA description → array of { contract_number, unit_number, premise_id, electricity_meter, account_no }\n// Works even if table columns are reordered.\n\nconst description = $('Parse ticket details').first().json.output.description;\n\nfunction clean(s = \"\") {\n  return String(s).replace(/\\u00A0/g, \" \").replace(/[ \\t]+/g, \" \").trim();\n}\nfunction normHeader(s = \"\") {\n  return clean(s).toLowerCase()\n    .replace(/[^a-z0-9]+/g, \"_\")\n    .replace(/^_+|_+$/g, \"\");\n}\n\nconst RE = {\n  contract: /\\b[12]\\d{9,10}\\b/g,   // starts with 1 or 2; 10–11 digits\n  premiseId: /\\b\\d{10}\\b/g,        // 10 digits\n  meter: /\\b[A-Z]{3}\\d{7,}\\b/g,    // e.g., KFM/SXE/SMR/... + digits\n  account: /\\b\\d{10,12}\\b/g,       // 10–12 digits\n};\nconst RE_UNIT = /\\b(?:unit|وحدة)[\\s#:_-]*([0-9]+)\\b/i;\n\nfunction looksContract(s) { return /^[12]\\d{9,10}$/.test(s || \"\"); }\nfunction looksPremise(s)  { return /^\\d{10}$/.test(s || \"\"); }\nfunction looksMeter(s)    { return /^[A-Z]{3}\\d{7,}$/.test(s || \"\"); }\nfunction looksAccount(s)  { return /^\\d{10,12}$/.test(s || \"\"); }\n\nfunction normalizeText(t) {\n  return (String(t || \"\")).replace(/\\r\\n?/g, \"\\n\").replace(/\\t/g, \"    \").trim();\n}\n\n// Extract contiguous markdown table blocks (lines starting with '|')\nfunction extractMarkdownTables(t) {\n  const lines = t.split(\"\\n\");\n  const blocks = [];\n  let buf = [];\n  for (const l of lines) {\n    if (/^\\s*\\|.+\\|\\s*$/.test(l)) buf.push(l);\n    else if (buf.length) { blocks.push(buf.join(\"\\n\")); buf = []; }\n  }\n  if (buf.length) blocks.push(buf.join(\"\\n\"));\n  return blocks;\n}\n\n// Build header index map with aliases\nfunction buildHeaderIndexMap(headerLine) {\n  const headers = headerLine\n    .replace(/^\\s*\\|/, \"\")\n    .replace(/\\|\\s*$/, \"\")\n    .split(\"|\")\n    .map(clean);\n\n  const map = {};\n  headers.forEach((h, i) => {\n    const key = normHeader(h);\n\n    // canonical fields\n    if (/(^|_)contract(_|$)number$|^contract$/.test(key)) map.contract_number = i;\n    else if (/^unit(_)?number$|^unit$|^unit_no$/.test(key)) map.unit_number = i;\n    else if (/^premise(_)?id$|^premiseid$/.test(key)) map.premise_id = i;\n    else if (/^electricity(_)?meter(_)?number$|^meter(_)?number$|^electricity(_)?meter$|^meter$/.test(key)) map.electricity_meter = i;\n    else if (/^account(_)?no$|^account$|^account_number$/.test(key)) map.account_no = i;\n    else if (/^notes?$|^remark(s)?$/.test(key)) map.notes = i;\n  });\n\n  return { headers, map };\n}\n\nfunction parseExistingTable(block) {\n  const rows = [];\n  const lines = block.split(\"\\n\").filter(Boolean);\n  if (lines.length < 2) return rows;\n\n  const { map } = buildHeaderIndexMap(lines[0]);\n\n  const dataLines = lines.slice(1).filter(l => /\\|/.test(l));\n  for (const l of dataLines) {\n    const cells = l.trim().replace(/^\\|/, \"\").replace(/\\|$/, \"\").split(\"|\").map(clean);\n\n    // Pull by header mapping (fallback to empty if missing)\n    const contract_number = cells[map.contract_number ?? -1] || \"\";\n    if (!looksContract(contract_number)) continue; // must have valid contract\n\n    const unitRaw      = cells[map.unit_number ?? -1] || \"\";\n    const premiseRaw   = cells[map.premise_id ?? -1] || \"\";\n    const meterRaw     = cells[map.electricity_meter ?? -1] || \"\";\n    const accountRaw   = cells[map.account_no ?? -1] || \"\";\n    const notesRaw     = cells[map.notes ?? -1] || \"\";\n\n    // Validate each cell independently (prevents contract bleeding into account)\n    const unit_number = unitRaw ? String(parseInt(unitRaw, 10)) : (\n      // try infer from notes regardless of column order\n      (notesRaw.match(RE_UNIT)?.[1] ? String(parseInt(notesRaw.match(RE_UNIT)[1], 10)) : \"\")\n    );\n    const premise_id = looksPremise(premiseRaw) ? premiseRaw : \"\";\n    const electricity_meter = looksMeter(meterRaw) ? meterRaw : \"\";\n    const account_no = looksAccount(accountRaw) && accountRaw !== contract_number ? accountRaw : \"\";\n\n    rows.push({\n      contract_number: clean(contract_number),\n      unit_number,\n      premise_id,\n      electricity_meter,\n      account_no,\n    });\n  }\n  return rows;\n}\n\n// Free-text scan (skip table rows; pick account_no carefully)\nfunction scanFreeText(t) {\n  const out = [];\n  for (const raw of t.split(\"\\n\")) {\n    const line = raw.trim();\n    if (!line) continue;\n    if (/^\\s*\\|.+\\|\\s*$/.test(line)) continue; // skip table lines\n\n    const contracts = line.match(RE.contract) || [];\n    if (!contracts.length) continue;\n\n    const contract = contracts[0];\n    if (!looksContract(contract)) continue;\n\n    const premises = line.match(RE.premiseId) || [];\n    const meters   = line.match(RE.meter)     || [];\n    const accounts = line.match(RE.account)   || [];\n\n    // Choose account_no = last 10–12 digit number that's NOT the contract\n    const account_no =\n      (accounts.filter(a => a !== contract).slice(-1)[0]) || \"\";\n\n    const premise_id = (premises.find(looksPremise)) || \"\";\n    const electricity_meter = (meters.find(looksMeter)) || \"\";\n\n    let unit = \"\";\n    const um = line.match(RE_UNIT);\n    if (um) unit = um[1];\n\n    out.push({\n      contract_number: clean(contract),\n      unit_number: unit ? String(parseInt(unit, 10)) : \"\",\n      premise_id: looksPremise(premise_id) ? premise_id : \"\",\n      electricity_meter: looksMeter(electricity_meter) ? electricity_meter : \"\",\n      account_no: looksAccount(account_no) ? account_no : \"\",\n    });\n  }\n  return out;\n}\n\nfunction uniqKey(r) {\n  return [\n    r.contract_number,\n    r.unit_number || \"\",\n    r.premise_id || \"\",\n    r.electricity_meter || \"\",\n    r.account_no || \"\",\n  ].join(\"||\");\n}\n\n// ---------- main ----------\nconst text = normalizeText(description);\n\n// gather rows from tables + stray lines\nlet rows = [];\nfor (const block of extractMarkdownTables(text)) {\n  rows = rows.concat(parseExistingTable(block));\n}\nrows = rows.concat(scanFreeText(text));\n\n// dedupe\nconst seen = new Set();\nconst deduped = [];\nfor (const r of rows) {\n  const key = uniqKey(r);\n  if (seen.has(key)) continue;\n  seen.add(key);\n  deduped.push(r);\n}\n\n// sort by contract_number then unit_number\ndeduped.sort((a, b) => {\n  if (a.contract_number === b.contract_number) {\n    const au = a.unit_number ? parseInt(a.unit_number, 10) : Number.MAX_SAFE_INTEGER;\n    const bu = b.unit_number ? parseInt(b.unit_number, 10) : Number.MAX_SAFE_INTEGER;\n    return au - bu;\n  }\n  // numeric compare via length then lexicographic to avoid BigInt issues in sandbox\n  if (a.contract_number.length !== b.contract_number.length) {\n    return a.contract_number.length - b.contract_number.length;\n  }\n  return a.contract_number.localeCompare(b.contract_number);\n});\n\n// IMPORTANT: n8n expects items as [{ json: ... }]\nreturn [\n  { complete_cases: $input.first().json.cases_with_complete_requirements,\n    incomplete_cases: $input.first().json.cases_with_incomplete_requirements,\n    fetched_cases_from_jira: deduped\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5940,
+        1000
+      ],
+      "id": "38a55f1c-3cfe-4d2d-8133-2dd037d93640",
+      "name": "Fetch and parse unit details from ticket"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node — Filter & enrich fetched_cases_from_jira using complete_cases & incomplete_cases\n\nconst input = $input.first().json;\n\n// Defensive: handle when payload is wrapped (array with a single object)\nconst payload = Array.isArray(input) ? input[0] : input;\n\nconst complete = $input.first().json.complete_cases\nconst incomplete = $input.first().json.incomplete_cases\nconst fetched = $input.first().json.fetched_cases_from_jira\n\n// --- helpers ---\nconst clean = (v) => (v === null || v === undefined) ? \"\" : String(v).trim();\n\n// Access meter under either key\nfunction getMeter(o) {\n  return clean(o.electricity_meter ?? o.electricity_meter_number);\n}\nfunction getPremise(o) { return clean(o.premise_id); }\nfunction getAccount(o) { return clean(o.account_no); }\nfunction getContract(o) { return clean(o.contract_number); }\n\n// Build value sets from complete_cases for quick membership checks\nconst completePremises = new Set();\nconst completeMeters   = new Set();\nconst completeAccounts = new Set();\n\nfor (const c of complete) {\n  const p = getPremise(c); if (p) completePremises.add(p);\n  const m = getMeter(c);   if (m) completeMeters.add(m);\n  const a = getAccount(c); if (a) completeAccounts.add(a);\n}\n\n// 1) EXCLUDE fetched items that clash with any complete_cases on premise/meter/account\nconst filteredFetched = fetched.filter(f => {\n  const p = getPremise(f);\n  const m = getMeter(f);\n  const a = getAccount(f);\n\n  const clash =\n    (p && completePremises.has(p)) ||\n    (m && completeMeters.has(m)) ||\n    (a && completeAccounts.has(a));\n\n  return !clash;\n});\n\n// 2) Build maps from incomplete_cases to pull unit_number by premise/meter/account\nconst mapPremiseToUnit = new Map();\nconst mapMeterToUnit   = new Map();\nconst mapAccountToUnit = new Map();\n\nfor (const inc of incomplete) {\n  const unit = clean(inc.unit_number);\n  if (!unit) continue;\n\n  const p = getPremise(inc);\n  const m = getMeter(inc);\n  const a = getAccount(inc);\n\n  if (p && !mapPremiseToUnit.has(p)) mapPremiseToUnit.set(p, unit);\n  if (m && !mapMeterToUnit.has(m))   mapMeterToUnit.set(m, unit);\n  if (a && !mapAccountToUnit.has(a)) mapAccountToUnit.set(a, unit);\n}\n\n// 3) Enrich remaining fetched items with unit_number from incomplete_cases when matching\nconst enrichedFetched = filteredFetched.map(f => {\n  const out = { ...f }; // keep original keys (including electricity_meter vs electricity_meter_number)\n\n  const hasUnit = clean(out.unit_number) !== \"\";\n  const p = getPremise(out);\n  const m = getMeter(out);\n  const a = getAccount(out);\n\n  // Prefer premise match, then meter, then account\n  let unitFromIncomplete = \"\";\n  if (p && mapPremiseToUnit.has(p)) unitFromIncomplete = mapPremiseToUnit.get(p);\n  else if (m && mapMeterToUnit.has(m)) unitFromIncomplete = mapMeterToUnit.get(m);\n  else if (a && mapAccountToUnit.has(a)) unitFromIncomplete = mapAccountToUnit.get(a);\n\n  if (!hasUnit && unitFromIncomplete) {\n    out.unit_number = unitFromIncomplete;\n  }\n\n  return out;\n});\n\n// Return the final modified JIRA array\nreturn [\n  {\n    json: {\n      filtered_cases: enrichedFetched\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6420,
+        1000
+      ],
+      "id": "d182e84f-cd00-49e1-bc92-10b624bd3b1b",
+      "name": "Filter and finalize incomplete_cases"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node — Split into two arrays by presence of unit_number\n\n// 1) Read input (handles both wrapped and direct arrays)\nconst filtered_cases = $input.first().json.filtered_cases\n\n// 2) Helper to decide if unit_number is present\nconst hasUnit = (v) => v !== null && v !== undefined && String(v).trim() !== \"\";\n\n// 3) Split into two arrays\nconst now_complete_cases = [];\nconst need_more_info_cases = [];\n\nfor (const item of filtered_cases) {\n  if (hasUnit(item.unit_number)) now_complete_cases.push(item);\n  else need_more_info_cases.push(item);\n}\n\n// 4) Return both arrays in one item\nreturn [\n  {\n    json: {\n      now_complete_cases,\n      need_more_info_cases,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6860,
+        1000
+      ],
+      "id": "bffaf618-2f29-45fe-8865-e38493e32d51",
+      "name": "Segregate cases: now_complete vs need_more_info"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.now_complete_cases }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "array",
+                      "operation": "lengthGt",
+                      "rightType": "number"
+                    },
+                    "id": "e84c3308-9eb8-4bba-a356-2e7b68587399"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "now_complete cases"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "fcf6b31f-ad38-4e0d-af86-995edea5e7e7",
+                    "leftValue": "={{ $json.need_more_info_cases }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "array",
+                      "operation": "lengthGt",
+                      "rightType": "number"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "need_more_info cases"
+            }
+          ]
+        },
+        "options": {
+          "allMatchingOutputs": true
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        7340,
+        1000
+      ],
+      "id": "72bd58ad-d151-425b-b00b-b4134bb335b4",
+      "name": "Cases: now_complete vs need_more_info",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "o2iCPG1NWFQklfv8",
+          "mode": "list",
+          "cachedResultName": "Execute Gitlab pipeline"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        8420,
+        740
+      ],
+      "name": "Execute: sec_move_in(cases with complete requirements)1",
+      "id": "ec6c77ee-3931-4993-8e36-c1decf2af52f",
+      "alwaysOutputData": false,
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const now_complete_cases = $input.first().json.now_complete_cases\n\nconst input_params = now_complete_cases.map(obj => {\n  // Stringify to JSON first (double quotes), then swap \" -> '\n  return JSON.stringify(obj).replace(/\"/g, \"'\");\n});\n\nreturn [\n  {\n    input_params,\n    script_name: \"sec_move_in_scripts/sec_move_in\",\n    service_name: 'ejar3-sec'\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7920,
+        740
+      ],
+      "id": "274bb577-a32d-456a-a5b3-7146bc1247e1",
+      "name": "Prepare: sec_move_in"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get stdout from previous node\nconst output = $input.first().json.stdout\n\nfunction extractSection(text, marker) {\n  const start = `${marker} START`;\n  const end   = `${marker} END`;\n  const regex = new RegExp(`${start}[\\\\s\\\\S]*?${end}`, 'm');\n  const match = text.match(regex);\n  if (!match) return '';   // Always return a string\n\n  // Extract inner lines (between markers)\n  const inner = match[0]\n    .replace(start, \"\")\n    .replace(end, \"\")\n    .trim();\n\n  const lines = inner\n    .split(\"\\n\")\n    .map(s => s.trim())\n    .filter(Boolean);\n\n  // Clean array-like formatting if present ([\"...\"])\n  return lines\n    .join(\"\\n\")\n    .replace(/^\\[\\s*\"?/, \"\")   // remove leading [\"\n    .replace(/\"?\\s*\\]$/, \"\");  // remove trailing \"]\n}\n\nreturn [\n  {\n    processed_now_complete_cases: extractSection(output, \"DONE CASES\"),\n    failed_now_complete_cases: extractSection(output, \"UNDONE CASES\"),\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8920,
+        740
+      ],
+      "id": "281bc545-190c-4341-b2e2-79eeb8a74aa7",
+      "name": "Extract cases: done vs undone1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const needMore = $input.first().json.need_more_info_cases || [];\n\n// Accept either electricity_meter or electricity_meter_number\nconst getMeter = (o) => (o?.electricity_meter ?? o?.electricity_meter_number);\nconst isMissing = (v) => v === null || v === undefined || String(v).trim() === \"\";\n\n// Canonical attributes and getters (order fixed)\nconst ATTRS = [\n  [\"unit_number\",        (o) => o.unit_number],\n  [\"premise_id\",         (o) => o.premise_id],\n  [\"electricity_meter\",  getMeter],\n  [\"account_no\",         (o) => o.account_no],\n];\n\nconst lines = needMore.map(rec => {\n  const contract = String(rec.contract_number ?? \"\").trim();\n\n  const available = [];\n  const missing   = [];\n\n  for (const [name, getter] of ATTRS) {\n    const val = getter(rec);\n    if (isMissing(val)) {\n      missing.push(name);\n    } else {\n      available.push(`${name}=${String(val).trim()}`);\n    }\n  }\n\n  const availableTxt = available.length ? available.join(\", \") : \"none\";\n  const missingTxt   = missing.length   ? missing.join(\", \")   : \"none\";\n\n  return `${contract}: Available → ${availableTxt} | Missing → ${missingTxt}.`;\n});\n\n// Stringify the whole blob as requested\nconst failedStr = JSON.stringify(lines.join(\"\\n\") || \"\");\n\nreturn [{ json: { need_more_info_cases: failedStr } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7920,
+        1200
+      ],
+      "id": "c6e198bb-feed-4876-bdec-e8eb2f1a2a61",
+      "name": "Format to JIRA comment: need_more_info cases"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        9760,
+        1000
+      ],
+      "id": "5b5014b4-f159-43bc-b573-8fbff21bdd96",
+      "name": "Merge2",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        10680,
+        540
+      ],
+      "id": "344cf42c-4639-4bff-aa0c-67857b4666bf",
+      "name": "Merge3"
+    },
+    {
+      "parameters": {
+        "jiraVersion": "server",
+        "resource": "issueComment",
+        "issueKey": "={{ $('Prepare: JIRA comment1').item.json.ticket_number }}",
+        "comment": "=Hello,\n\n{{ $('Prepare: JIRA comment1').item.json.jira_comment }}\n\nPlease check and confirm, thanks.",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        12640,
+        540
+      ],
+      "id": "dea583b8-4828-443f-acaf-581c0db4bbfb",
+      "name": "Add a comment",
+      "alwaysOutputData": true,
+      "credentials": {
+        "jiraSoftwareServerApi": {
+          "id": "310lvBWLAxwBAmfc",
+          "name": "Jira SW Server account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jiraVersion": "server",
+        "operation": "update",
+        "issueKey": "={{ $json.ticket_number }}",
+        "updateFields": {
+          "statusId": {
+            "__rl": true,
+            "value": "171",
+            "mode": "list",
+            "cachedResultName": "In Progress"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        12040,
+        540
+      ],
+      "id": "d5150cd9-a9ee-4134-901d-579576155d9d",
+      "name": "Mark ticket to in_progress",
+      "alwaysOutputData": true,
+      "credentials": {
+        "jiraSoftwareServerApi": {
+          "id": "310lvBWLAxwBAmfc",
+          "name": "Jira SW Server account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Extract contract numbers": {
+      "main": [
+        [
+          {
+            "node": "Execute: fetch contract ids from core",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Manual ticket fetcher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Automatic ticket fetcher": {
+      "main": [
+        [
+          {
+            "node": "Parse ticket details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual ticket fetcher": {
+      "main": [
+        [
+          {
+            "node": "Parse ticket details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse ticket details": {
+      "main": [
+        [
+          {
+            "node": "If SEC Move In",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If SEC Move In": {
+      "main": [
+        [
+          {
+            "node": "Extract contract numbers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute: fetch contract ids from core": {
+      "main": [
+        [
+          {
+            "node": "Extract cases: contract_ids",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract cases: contract_ids": {
+      "main": [
+        [
+          {
+            "node": "Segregate cases: active/inactive contracts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Prepare: if already moved_in",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare: fetch unit details from core",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: if already moved_in": {
+      "main": [
+        [
+          {
+            "node": "Execute: if already moved_in",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: fetch unit details from core": {
+      "main": [
+        [
+          {
+            "node": "Execute: Fetch unit input attributes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute: Fetch unit input attributes": {
+      "main": [
+        [
+          {
+            "node": "Cases with complete vs incomplete requirements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Complete vs incomplete cases": {
+      "main": [
+        [
+          {
+            "node": "Prepare: sec_move_in(cases with complete requirements)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare: trigger already-created inactive requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch and parse unit details from ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cases: parse json": {
+      "main": [
+        [
+          {
+            "node": "Complete vs incomplete cases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Segregate cases: active/inactive contracts": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute: if already moved_in": {
+      "main": [
+        [
+          {
+            "node": "Extract inactive cases: already_moved_in vs not_moved_in",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cases with complete vs incomplete requirements": {
+      "main": [
+        [
+          {
+            "node": "Cases: parse json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: sec_move_in(cases with complete requirements)": {
+      "main": [
+        [
+          {
+            "node": "Execute: sec_move_in(cases with complete requirements)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute: sec_move_in(cases with complete requirements)": {
+      "main": [
+        [
+          {
+            "node": "Extract cases: done vs undone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract inactive cases: already_moved_in vs not_moved_in": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract cases: done vs undone": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: trigger already-created inactive requests": {
+      "main": [
+        [
+          {
+            "node": "Execute: trigger already-created inactive requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute: trigger already-created inactive requests": {
+      "main": [
+        [
+          {
+            "node": "Extract triggered_already_created cases: success vs failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: JIRA comment1": {
+      "main": [
+        [
+          {
+            "node": "Mark ticket to in_progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract triggered_already_created cases: success vs failed": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Fetch and parse unit details from ticket": {
+      "main": [
+        [
+          {
+            "node": "Filter and finalize incomplete_cases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter and finalize incomplete_cases": {
+      "main": [
+        [
+          {
+            "node": "Segregate cases: now_complete vs need_more_info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Segregate cases: now_complete vs need_more_info": {
+      "main": [
+        [
+          {
+            "node": "Cases: now_complete vs need_more_info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cases: now_complete vs need_more_info": {
+      "main": [
+        [
+          {
+            "node": "Prepare: sec_move_in",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format to JIRA comment: need_more_info cases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: sec_move_in": {
+      "main": [
+        [
+          {
+            "node": "Execute: sec_move_in(cases with complete requirements)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute: sec_move_in(cases with complete requirements)1": {
+      "main": [
+        [
+          {
+            "node": "Extract cases: done vs undone1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format to JIRA comment: need_more_info cases": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Extract cases: done vs undone1": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge2": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge3": {
+      "main": [
+        [
+          {
+            "node": "Prepare: JIRA comment1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark ticket to in_progress": {
+      "main": [
+        [
+          {
+            "node": "Add a comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "9986abbd-5477-4749-a32b-2cd0cc64771c",
+  "meta": {
+    "instanceId": "ee8b7f570b7f381372c48054eaac25a5c491167d410d6f27908b12bd1c1315e1"
+  },
+  "id": "gZDgvBtf2p8pXGoL",
+  "tags": []
+}
